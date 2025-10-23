@@ -1,0 +1,27 @@
+elevenlabs>=1.9.0
+python-dotenv>=1.0.1
+tqdm>=4.66.4
+
+# RAG
+chromadb>=0.5.5
+openai>=1.47.0
+tenacity>=8.5.0
+numpy>=1.26.4
+scikit-learn>=1.4.2
+typer>=0.12.3
+rich>=13.7.1
+orjson>=3.10.7
+ujson>=5.10.0
+aiofiles>=23.2.1
+pydantic>=2.8.2
+rapidfuzz>=3.9.6
+streamlit>=1.12.0
+altair>=4.2,<5
+
+# Conversation memory
+langchain-community>=0.0.20
+langchain-core>=0.1.0
+
+# PDF processing
+PyPDF2>=3.0.1
+
