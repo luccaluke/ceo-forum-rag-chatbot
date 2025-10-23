@@ -4,3 +4,6 @@ chroma_data/
 ceo_forum/
 chroma.log
 migrate_to_cloud.py
+.env
+*.env
+.streamlit/secrets.toml
