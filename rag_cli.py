@@ -648,10 +648,17 @@ def build_embedding_provider(provider: str, model: Optional[str]) -> EmbeddingPr
 
 def get_chroma_client(persist_directory: str) -> Client:
     # Use Chroma Cloud instead of local persistent client
+    api_key = os.getenv("CHROMA_API_KEY")
+    tenant = os.getenv("CHROMA_TENANT")
+    database = os.getenv("CHROMA_DATABASE")
+    
+    if not api_key or not tenant:
+        raise RuntimeError("CHROMA_API_KEY and CHROMA_TENANT must be set in environment variables")
+    
     client = chromadb.CloudClient(
-        api_key='***REMOVED***',
-        tenant='***REMOVED***',
-        database='ceo_forum'
+        api_key=api_key,
+        tenant=tenant,
+        database=database
     )
     return client
 
