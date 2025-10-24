@@ -97,6 +97,34 @@ def normalize_whitespace(text: str) -> str:
     return text.strip()
 
 
+def strip_leading_direct_answer(text: str) -> str:
+    """Remove a leading 'Direct answer' label (and common Markdown variants).
+
+    Handles forms like:
+    - Direct answer\n...
+    - Direct answer: ...
+    - **Direct answer**: ...
+    - ### Direct answer\n...
+    - Direct Answer — ...
+    Only affects the very beginning of the text.
+    """
+    if not text:
+        return text
+    # Work on a left-trimmed view to match headings at the start
+    view = text.lstrip()
+    # Case 1: Heading on its own line, then newline(s)
+    pattern_line = r"^(?:#{1,6}\s*)?(?:\*\*|__)?\s*direct\s+answer\s*(?:\*\*|__)?\s*[:\-–—]?\s*\n+"
+    new_view = re.sub(pattern_line, "", view, count=1, flags=re.IGNORECASE)
+    if new_view != view:
+        return new_view.lstrip()
+    # Case 2: Inline prefix with punctuation then space (e.g., 'Direct answer: ')
+    pattern_inline = r"^(?:#{1,6}\s*)?(?:\*\*|__)?\s*direct\s+answer\s*(?:\*\*|__)?\s*[:\-–—]\s+"
+    new_view2 = re.sub(pattern_inline, "", view, count=1, flags=re.IGNORECASE)
+    if new_view2 != view:
+        return new_view2.lstrip()
+    return text
+
+
 def preprocess_turns(text: str) -> str:
     """Ensure double-newline separated speaker turns while preserving speaker labels.
 
@@ -1835,6 +1863,8 @@ def run_query(
         t_compose = time.time()
         try:
             answer = compose_answer_oai(question, snippets[:top_k], model=composition_model)
+            # Post-process to remove a leading 'Direct answer' heading if present
+            answer = strip_leading_direct_answer(answer)
             console.log(f"[cyan]⏱️  Answer composition ({time.time() - t_compose:.2f}s)[/cyan]")
         except Exception as e:
             answer = f"[Composition failed: {e}]"
