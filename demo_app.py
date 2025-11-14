@@ -246,9 +246,11 @@ def process_query(question: str) -> Dict:
     return result
 
 
-def display_chat_message(role: str, content: str, result: Optional[Dict] = None, question: str = ""):
+def display_chat_message(role: str, content: str, result: Optional[Dict] = None, question: str = "", anchor_id: Optional[str] = None):
     """Display a chat message with optional result data."""
     with st.chat_message(role):
+        if anchor_id:
+            st.markdown(f"<span id=\"{anchor_id}\"></span>", unsafe_allow_html=True)
         st.write(content)
         
         if result and role == "assistant":
@@ -387,7 +389,14 @@ if "pending_question" in st.session_state:
             trim_conversation_memory()
             
             # Display assistant response
-            display_chat_message("assistant", answer, result, question)
+            display_chat_message("assistant", answer, result, question, anchor_id="last_answer")
+            # Scroll to the top of the synthesized answer instead of the very bottom
+            st.markdown("""
+<script>
+  const el = document.getElementById('last_answer');
+  if (el) { el.scrollIntoView({ block: 'start' }); }
+</script>
+""", unsafe_allow_html=True)
             
             st.caption(f"✨ Completed in {dt:.2f}s")
             
@@ -400,7 +409,7 @@ if "pending_question" in st.session_state:
             })
             display_chat_message("assistant", error_msg, question=question)
     
-    st.rerun()
+    # Do not auto-rerun; keep the current scroll position at the synthesized answer
 
 # Chat input
 if prompt := st.chat_input("Ask a question about CEO insights, strategies, and experiences..."):
@@ -442,7 +451,14 @@ if prompt := st.chat_input("Ask a question about CEO insights, strategies, and e
             trim_conversation_memory()
             
             # Display assistant response
-            display_chat_message("assistant", answer, result, prompt)
+            display_chat_message("assistant", answer, result, prompt, anchor_id="last_answer")
+            # Scroll to the top of the synthesized answer instead of the very bottom
+            st.markdown("""
+<script>
+  const el = document.getElementById('last_answer');
+  if (el) { el.scrollIntoView({ block: 'start' }); }
+</script>
+""", unsafe_allow_html=True)
             
             st.caption(f"✨ Completed in {dt:.2f}s")
             
@@ -455,4 +471,4 @@ if prompt := st.chat_input("Ask a question about CEO insights, strategies, and e
             })
             display_chat_message("assistant", error_msg, question=prompt)
     
-    st.rerun()
+    # Do not auto-rerun; keep the current scroll position at the synthesized answer

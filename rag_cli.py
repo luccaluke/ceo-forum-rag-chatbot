@@ -61,7 +61,7 @@ def to_absolute_path(path_str: str) -> str:
 
 
 def default_data_root() -> str:
-    return to_absolute_path("./Data/Transcripts")
+    return to_absolute_path("../Data/Transcripts")
 
 
 def default_persist_dir() -> str:
@@ -704,7 +704,7 @@ def get_or_create_collection(client: Client, name: str) -> chromadb.api.models.C
 # -----------------------------
 
 
-def load_metadata_manifest(manifest_path: str = "./Data/metadata_manifest.json") -> Dict:
+def load_metadata_manifest(manifest_path: str = "../Data/metadata_manifest.json") -> Dict:
     """Load the enriched metadata manifest."""
     abs_path = to_absolute_path(manifest_path)
     if not os.path.exists(abs_path):
@@ -731,7 +731,7 @@ def index(
     reindex: bool = typer.Option(False, help="If true, clears existing collection before reindexing."),
     skip_unchanged: bool = typer.Option(True, help="Skip files whose content hash hasn't changed."),
     files: List[str] = typer.Option(None, help="Optional list of specific .txt files to index (absolute or relative paths)."),
-    manifest_path: str = typer.Option("./Data/metadata_manifest.json", help="Path to enriched metadata manifest."),
+    manifest_path: str = typer.Option("../Data/metadata_manifest.json", help="Path to enriched metadata manifest."),
 ):
     """Build the vector index from transcript .txt files."""
     data_root = to_absolute_path(data_root)
