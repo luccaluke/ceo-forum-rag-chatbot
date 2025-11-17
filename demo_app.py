@@ -8,7 +8,7 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.messages import HumanMessage, AIMessage
 from rich.console import Console
 
-from rag_cli import run_query, default_persist_dir, extract_relevant_excerpt
+from rag_cli import run_query, default_persist_dir, extract_relevant_excerpt, get_date_range_from_db
 
 console = Console()
 
@@ -64,6 +64,24 @@ if "settings" not in st.session_state:
         "max_history_turns": 20,  # Keep last 20 exchanges (40 messages)
     }
 
+# Initialize date range (fetch once and cache)
+if "date_range" not in st.session_state:
+    # Get date range from database
+    min_date, max_date = get_date_range_from_db(st.session_state.settings["persist_dir"])
+    st.session_state.date_range = {
+        "min": min_date,
+        "max": max_date,
+        "available": min_date is not None and max_date is not None
+    }
+
+if "date_filter" not in st.session_state:
+    # Initialize date filter to full range
+    st.session_state.date_filter = {
+        "enabled": False,
+        "min": st.session_state.date_range.get("min"),
+        "max": st.session_state.date_range.get("max")
+    }
+
 
 def trim_conversation_memory() -> None:
     """
@@ -117,6 +135,7 @@ def render_snippet_in_chat(sn: Dict, idx: int, question: str) -> None:
     company = sn.get("company") or sn.get("speaker_org") or ""
     title = sn.get("title") or "Untitled"
     category = sn.get("category") or ""
+    date = sn.get("date") or ""
     score = float(sn.get("score", 0.0))
     
     # Use pre-extracted display_excerpt if available, otherwise fall back to text
@@ -136,10 +155,14 @@ def render_snippet_in_chat(sn: Dict, idx: int, question: str) -> None:
         header_parts.append(f"• {company}")
     if category:
         header_parts.append(f"• {category}")
+    if date:
+        header_parts.append(f"• 📅 {date}")
     header_line = " ".join(header_parts)
 
     with st.expander(header_line, expanded=(idx == 0)):
         st.markdown(f"**Source:** {title}")
+        if date:
+            st.caption(f"📅 {date}")
         st.write(display_text)
         
         # Show full context if available and different from display
@@ -173,6 +196,11 @@ def process_query(question: str) -> Dict:
     # Augment query with conversation context for better follow-up handling
     augmented_question = augment_query_with_context(question)
     
+    # Get date filter parameters
+    date_filter = st.session_state.date_filter
+    date_min = date_filter["min"] if date_filter["enabled"] else None
+    date_max = date_filter["max"] if date_filter["enabled"] else None
+    
     console.log("[cyan]Running RAG query (retrieval + evaluation)...[/cyan]")
     result = run_query(
         question=augmented_question,
@@ -184,6 +212,8 @@ def process_query(question: str) -> Dict:
         full_turn=True,
         agent_expand=True,
         metadata_agent=True,
+        date_min=date_min,
+        date_max=date_max,
     )
     
     # Post-process: Extract intelligent excerpts from long snippets IN PARALLEL
@@ -271,11 +301,22 @@ def display_chat_message(role: str, content: str, result: Optional[Dict] = None,
                         title = src.get("title") or "Untitled"
                         guest = src.get("guest") or ""
                         category = src.get("category") or ""
+                        date = src.get("date") or ""
                         num_snippets = src.get("num_snippets", 1)
                         best_score = src.get("best_score", 0.0)
                         
                         st.markdown(f"**{title}**")
-                        st.caption(f"{guest} • {category} • {num_snippets} snippet(s) • Best match: {best_score:.1%}")
+                        # Build caption with date if available
+                        caption_parts = []
+                        if guest:
+                            caption_parts.append(guest)
+                        if category:
+                            caption_parts.append(category)
+                        if date:
+                            caption_parts.append(f"📅 {date}")
+                        caption_parts.append(f"{num_snippets} snippet(s)")
+                        caption_parts.append(f"Best match: {best_score:.1%}")
+                        st.caption(" • ".join(caption_parts))
 
 
 # Sidebar configuration
@@ -303,6 +344,90 @@ with st.sidebar:
         value=st.session_state.settings["compose"],
         help="Use GPT to compose a detailed answer from snippets"
     )
+    
+    st.markdown("---")
+    
+    # Date filter
+    st.subheader("📅 Date Filter")
+    
+    if st.session_state.date_range["available"]:
+        from datetime import datetime
+        
+        # Parse min/max dates
+        min_date_str = st.session_state.date_range["min"]
+        max_date_str = st.session_state.date_range["max"]
+        
+        min_date_obj = datetime.strptime(min_date_str, "%Y-%m-%d").date()
+        max_date_obj = datetime.strptime(max_date_str, "%Y-%m-%d").date()
+        
+        # Enable/disable filter with clear explanation
+        date_filter_enabled = st.checkbox(
+            "Enable Date Filter",
+            value=st.session_state.date_filter["enabled"],
+            help="When disabled, ALL sources are searched (including those without dates)"
+        )
+        st.session_state.date_filter["enabled"] = date_filter_enabled
+        
+        if date_filter_enabled:
+            # Convert to month-granularity boundaries
+            # Get first day of min month and last day of max month
+            min_month_start = min_date_obj.replace(day=1)
+            
+            # Get last day of max month
+            if max_date_obj.month == 12:
+                max_month_end = max_date_obj.replace(year=max_date_obj.year + 1, month=1, day=1)
+            else:
+                max_month_end = max_date_obj.replace(month=max_date_obj.month + 1, day=1)
+            from datetime import timedelta
+            max_month_end = max_month_end - timedelta(days=1)
+            
+            # Check if we need to initialize the date selection in session state
+            if "date_selection" not in st.session_state:
+                st.session_state.date_selection = (min_month_start, max_month_end)
+            
+            # Date range picker
+            selected_dates = st.date_input(
+                "Select Date Range",
+                value=st.session_state.date_selection,
+                min_value=min_month_start,
+                max_value=max_month_end,
+                help="Filter sources within this date range (month granularity). Sources without dates are excluded."
+            )
+            
+            # Handle both tuple (range) and single date
+            if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
+                st.session_state.date_selection = selected_dates
+                selected_min, selected_max = selected_dates
+                # Round to month boundaries
+                selected_min_month = selected_min.replace(day=1)
+                if selected_max.month == 12:
+                    selected_max_month_end = selected_max.replace(year=selected_max.year + 1, month=1, day=1) - timedelta(days=1)
+                else:
+                    selected_max_month_end = selected_max.replace(month=selected_max.month + 1, day=1) - timedelta(days=1)
+                
+                st.session_state.date_filter["min"] = selected_min_month.strftime("%Y-%m-%d")
+                st.session_state.date_filter["max"] = selected_max_month_end.strftime("%Y-%m-%d")
+                
+                # Display selected range
+                st.caption(f"📅 {selected_min_month.strftime('%B %Y')} - {selected_max_month_end.strftime('%B %Y')}")
+            else:
+                # Reset to full range if incomplete selection
+                st.session_state.date_filter["min"] = min_date_str
+                st.session_state.date_filter["max"] = max_date_str
+            
+            # Clear/Reset button
+            if st.button("🔄 Reset to Full Range", use_container_width=True):
+                st.session_state.date_selection = (min_month_start, max_month_end)
+                st.session_state.date_filter["min"] = min_date_str
+                st.session_state.date_filter["max"] = max_date_str
+                st.rerun()
+        else:
+            # Filter disabled - ALL sources are searched
+            st.session_state.date_filter["min"] = min_date_str
+            st.session_state.date_filter["max"] = max_date_str
+            st.info("🔍 Searching all sources (including those without dates)")
+    else:
+        st.info("Date information not available in database")
     
     st.markdown("---")
     

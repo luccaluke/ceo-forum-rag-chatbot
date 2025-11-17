@@ -892,6 +892,51 @@ def build_query_client(
     return coll
 
 
+def get_date_range_from_db(
+    persist_dir: str = default_persist_dir(),
+    collection: str = "transcripts",
+) -> Tuple[Optional[str], Optional[str]]:
+    """Get the minimum and maximum dates from the ChromaDB collection.
+    
+    Returns:
+        (min_date, max_date) tuple in YYYY-MM-DD format, or (None, None) if no dates found
+    """
+    try:
+        client = get_chroma_client(persist_dir)
+        coll = get_or_create_collection(client, collection)
+        
+        # Get all unique dates (sample approach - get many records and find min/max)
+        # ChromaDB doesn't have a direct aggregation API, so we get a large sample
+        results = coll.get(
+            where={"date": {"$ne": ""}},  # Only get records with non-empty dates
+            limit=10000,  # Get large sample
+            include=["metadatas"]
+        )
+        
+        metadatas = results.get("metadatas", [])
+        if not metadatas:
+            return None, None
+        
+        # Extract all valid dates
+        dates = []
+        for meta in metadatas:
+            if meta and meta.get("date"):
+                date_str = meta["date"]
+                # Validate YYYY-MM-DD format
+                if len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-":
+                    dates.append(date_str)
+        
+        if not dates:
+            return None, None
+        
+        # Return min and max
+        return min(dates), max(dates)
+        
+    except Exception as e:
+        console.log(f"[yellow]Could not get date range from DB: {e}[/yellow]")
+        return None, None
+
+
 def extract_keywords(question: str, max_terms: int = 8) -> List[str]:
     # Very light keyword extraction: content words only
     q = question.lower()
@@ -1366,10 +1411,16 @@ def run_query(
     agent_expand: bool = True,
     max_agent_rounds: int = 2,
     metadata_agent: bool = True,
+    date_min: Optional[str] = None,
+    date_max: Optional[str] = None,
 ) -> Dict:
     """Programmatic interface for querying the RAG index.
 
     Returns a structured dict with keys: question, keywords, answer, snippets, sources.
+    
+    Args:
+        date_min: Minimum date filter (YYYY-MM-DD format), inclusive
+        date_max: Maximum date filter (YYYY-MM-DD format), inclusive
     """
     import time
     t_start = time.time()
@@ -1418,6 +1469,45 @@ def run_query(
     q_emb = q_provider.embed([question])
     console.log(f"[cyan]⏱️  Query embedding ({time.time() - t_embed:.2f}s)[/cyan]")
     
+    # Build ChromaDB where clause for date filtering
+    # IMPORTANT: where_clause remains None when no date filter is active
+    # This ensures ALL records (including those without dates) are returned when filter is disabled
+    where_clause: Optional[Dict] = None
+    if date_min or date_max:
+        conditions = []
+        
+        # Date is stored as string in YYYY-MM-DD format, empty string if missing
+        # ChromaDB supports $gte and $lte operators for string comparison
+        # When filtering IS active, we exclude records with empty dates since they can't be in range
+        if date_min and date_max:
+            # Both bounds: date >= date_min AND date <= date_max
+            where_clause = {
+                "$and": [
+                    {"date": {"$gte": date_min}},
+                    {"date": {"$lte": date_max}},
+                    {"date": {"$ne": ""}}  # Exclude empty dates
+                ]
+            }
+            console.log(f"[cyan]📅 Date filter: {date_min} to {date_max}[/cyan]")
+        elif date_min:
+            # Only minimum: date >= date_min
+            where_clause = {
+                "$and": [
+                    {"date": {"$gte": date_min}},
+                    {"date": {"$ne": ""}}
+                ]
+            }
+            console.log(f"[cyan]📅 Date filter: from {date_min}[/cyan]")
+        elif date_max:
+            # Only maximum: date <= date_max
+            where_clause = {
+                "$and": [
+                    {"date": {"$lte": date_max}},
+                    {"date": {"$ne": ""}}
+                ]
+            }
+            console.log(f"[cyan]📅 Date filter: until {date_max}[/cyan]")
+    
     # Query all collections in parallel and merge initial results
     t_retrieval = time.time()
     all_results = []
@@ -1425,7 +1515,10 @@ def run_query(
         # Parallel querying for multiple collections
         def query_collection(coll):
             try:
-                return coll.query(query_embeddings=q_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
+                if where_clause:
+                    return coll.query(query_embeddings=q_emb, n_results=n_results, where=where_clause, include=["metadatas", "documents", "distances"])  # type: ignore
+                else:
+                    return coll.query(query_embeddings=q_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
             except Exception:
                 return None
         
@@ -1439,7 +1532,10 @@ def run_query(
         # Single collection - no need for parallelization overhead
         for coll in colls:
             try:
-                res = coll.query(query_embeddings=q_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
+                if where_clause:
+                    res = coll.query(query_embeddings=q_emb, n_results=n_results, where=where_clause, include=["metadatas", "documents", "distances"])  # type: ignore
+                else:
+                    res = coll.query(query_embeddings=q_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
                 all_results.append(res)
             except Exception:
                 continue
@@ -1465,7 +1561,10 @@ def run_query(
                 # Parallel expansion query
                 def query_collection_expanded(coll):
                     try:
-                        return coll.query(query_embeddings=q_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
+                        if where_clause:
+                            return coll.query(query_embeddings=q_emb, n_results=n_results, where=where_clause, include=["metadatas", "documents", "distances"])  # type: ignore
+                        else:
+                            return coll.query(query_embeddings=q_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
                     except Exception:
                         return None
                 
@@ -1479,7 +1578,10 @@ def run_query(
                 # Single collection
                 for coll in colls:
                     try:
-                        res = coll.query(query_embeddings=q_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
+                        if where_clause:
+                            res = coll.query(query_embeddings=q_emb, n_results=n_results, where=where_clause, include=["metadatas", "documents", "distances"])  # type: ignore
+                        else:
+                            res = coll.query(query_embeddings=q_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
                         all_results.append(res)
                     except Exception:
                         continue
@@ -1625,7 +1727,10 @@ def run_query(
                 q2_emb = q_provider.embed([q2])
                 for coll in colls:
                     try:
-                        r2 = coll.query(query_embeddings=q2_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
+                        if where_clause:
+                            r2 = coll.query(query_embeddings=q2_emb, n_results=n_results, where=where_clause, include=["metadatas", "documents", "distances"])  # type: ignore
+                        else:
+                            r2 = coll.query(query_embeddings=q2_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
                         d2 = r2.get("documents", [[]])[0]
                         m2 = r2.get("metadatas", [[]])[0]
                         dist2 = r2.get("distances", [[]])[0]
@@ -1839,6 +1944,7 @@ def run_query(
             "title": meta.get("title"),
             "category": category,
             "guest": meta.get("guest"),
+            "date": meta.get("date"),  # Add date for filtering
             "source_path": meta.get("source_path"),
             "filename": filename,
             "source": filename,
@@ -1882,6 +1988,7 @@ def run_query(
             "title": s.get("title"),
             "category": s.get("category"),
             "guest": s.get("guest"),
+            "date": s.get("date"),
             "filename": s.get("filename"),
             "source_path": s.get("source_path"),
             "best_score": s.get("score", 0.0),
@@ -1925,6 +2032,8 @@ def query(
     agent_expand: bool = typer.Option(True, help="Use an agent to propose follow-up queries and merge results."),
     max_agent_rounds: int = typer.Option(1, help="Max agent expansion rounds."),
     metadata_agent: bool = typer.Option(True, help="Infer and attach real speaker names/roles to snippets."),
+    date_min: Optional[str] = typer.Option(None, help="Minimum date filter (YYYY-MM-DD format), inclusive."),
+    date_max: Optional[str] = typer.Option(None, help="Maximum date filter (YYYY-MM-DD format), inclusive."),
 ):
     response = run_query(
         question=question,
@@ -1943,6 +2052,8 @@ def query(
         agent_expand=agent_expand,
         max_agent_rounds=max_agent_rounds,
         metadata_agent=metadata_agent,
+        date_min=date_min,
+        date_max=date_max,
     )
 
     if json_output:
@@ -1956,9 +2067,17 @@ def query(
         table.add_column("Title")
         table.add_column("Category")
         table.add_column("Guest")
+        table.add_column("Date")
         table.add_column("Snippet")
         for s in response.get("snippets", [])[:top_k]:
-            table.add_row(f"{s['score']:.3f}", s.get("title") or "", s.get("category") or "", s.get("guest") or "", s.get("text") or "")
+            table.add_row(
+                f"{s['score']:.3f}", 
+                s.get("title") or "", 
+                s.get("category") or "", 
+                s.get("guest") or "", 
+                s.get("date") or "",
+                (s.get("text") or "")[:100]  # Truncate snippet for readability
+            )
         console.print(table)
 
 
