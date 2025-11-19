@@ -800,6 +800,15 @@ def index(
         host = enriched_meta.get("host")
         date = enriched_meta.get("date")
 
+        # Convert date string (YYYY-MM-DD) to numeric form for efficient range filtering in Chroma.
+        # Store alongside the human-readable date string.
+        date_num: int = 0
+        if isinstance(date, str) and len(date) == 10 and date[4] == "-" and date[7] == "-":
+            try:
+                date_num = int(date.replace("-", ""))
+            except Exception:
+                date_num = 0
+
         if skip_unchanged:
             try:
                 existing = coll.get(where={"record_id": {"$eq": record_id}}, include=["metadatas", "ids"], limit=1)  # type: ignore
@@ -852,6 +861,7 @@ def index(
                 "ceo_display": ceo_display or "",
                 "host": host or "",
                 "date": date or "",
+                "date_num": date_num,
             }
             all_ids.append(cid)
             all_texts.append(chunk)
@@ -1486,36 +1496,44 @@ def run_query(
     # This ensures ALL records (including those without dates) are returned when filter is disabled
     where_clause: Optional[Dict] = None
     if date_min or date_max:
-        conditions = []
-        
-        # Date is stored as string in YYYY-MM-DD format, empty string if missing
-        # ChromaDB supports $gte and $lte operators for string comparison
-        # When filtering IS active, we exclude records with empty dates since they can't be in range
-        if date_min and date_max:
-            # Both bounds: date >= date_min AND date <= date_max
+        # Convert YYYY-MM-DD strings to integer form (YYYYMMDD) for numeric comparison in Chroma.
+        def _date_to_int(s: str) -> Optional[int]:
+            if not s:
+                return None
+            try:
+                return int(s.replace("-", ""))
+            except Exception:
+                return None
+
+        date_min_int = _date_to_int(date_min) if date_min else None
+        date_max_int = _date_to_int(date_max) if date_max else None
+
+        # When filtering IS active, we exclude records with empty or missing dates (date_num == 0).
+        if date_min_int and date_max_int:
+            # Both bounds: date_num >= date_min_int AND date_num <= date_max_int
             where_clause = {
                 "$and": [
-                    {"date": {"$gte": date_min}},
-                    {"date": {"$lte": date_max}},
-                    {"date": {"$ne": ""}}  # Exclude empty dates
+                    {"date_num": {"$gte": date_min_int}},
+                    {"date_num": {"$lte": date_max_int}},
+                    {"date_num": {"$ne": 0}},  # Exclude empty/missing dates
                 ]
             }
             console.log(f"[cyan]📅 Date filter: {date_min} to {date_max}[/cyan]")
-        elif date_min:
-            # Only minimum: date >= date_min
+        elif date_min_int:
+            # Only minimum: date_num >= date_min_int
             where_clause = {
                 "$and": [
-                    {"date": {"$gte": date_min}},
-                    {"date": {"$ne": ""}}
+                    {"date_num": {"$gte": date_min_int}},
+                    {"date_num": {"$ne": 0}},
                 ]
             }
             console.log(f"[cyan]📅 Date filter: from {date_min}[/cyan]")
-        elif date_max:
-            # Only maximum: date <= date_max
+        elif date_max_int:
+            # Only maximum: date_num <= date_max_int
             where_clause = {
                 "$and": [
-                    {"date": {"$lte": date_max}},
-                    {"date": {"$ne": ""}}
+                    {"date_num": {"$lte": date_max_int}},
+                    {"date_num": {"$ne": 0}},
                 ]
             }
             console.log(f"[cyan]📅 Date filter: until {date_max}[/cyan]")
@@ -1528,10 +1546,20 @@ def run_query(
         def query_collection(coll):
             try:
                 if where_clause:
-                    return coll.query(query_embeddings=q_emb, n_results=n_results, where=where_clause, include=["metadatas", "documents", "distances"])  # type: ignore
+                    return coll.query(
+                        query_embeddings=q_emb,
+                        n_results=n_results,
+                        where=where_clause,
+                        include=["metadatas", "documents", "distances"],
+                    )  # type: ignore
                 else:
-                    return coll.query(query_embeddings=q_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
-            except Exception:
+                    return coll.query(
+                        query_embeddings=q_emb,
+                        n_results=n_results,
+                        include=["metadatas", "documents", "distances"],
+                    )  # type: ignore
+            except Exception as e:
+                console.log(f"[yellow]Chroma query failed for collection {coll.name}: {e}[/yellow]")
                 return None
         
         with ThreadPoolExecutor(max_workers=len(colls)) as executor:
@@ -1545,11 +1573,21 @@ def run_query(
         for coll in colls:
             try:
                 if where_clause:
-                    res = coll.query(query_embeddings=q_emb, n_results=n_results, where=where_clause, include=["metadatas", "documents", "distances"])  # type: ignore
+                    res = coll.query(
+                        query_embeddings=q_emb,
+                        n_results=n_results,
+                        where=where_clause,
+                        include=["metadatas", "documents", "distances"],
+                    )  # type: ignore
                 else:
-                    res = coll.query(query_embeddings=q_emb, n_results=n_results, include=["metadatas", "documents", "distances"])  # type: ignore
+                    res = coll.query(
+                        query_embeddings=q_emb,
+                        n_results=n_results,
+                        include=["metadatas", "documents", "distances"],
+                    )  # type: ignore
                 all_results.append(res)
-            except Exception:
+            except Exception as e:
+                console.log(f"[yellow]Chroma query failed for collection {coll.name}: {e}[/yellow]")
                 continue
     console.log(f"[cyan]⏱️  Initial retrieval ({time.time() - t_retrieval:.2f}s, {len(all_results)} collections)[/cyan]")
 
