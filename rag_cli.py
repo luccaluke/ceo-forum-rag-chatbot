@@ -897,41 +897,53 @@ def get_date_range_from_db(
     collection: str = "transcripts",
 ) -> Tuple[Optional[str], Optional[str]]:
     """Get the minimum and maximum dates from the ChromaDB collection.
-    
+
     Returns:
         (min_date, max_date) tuple in YYYY-MM-DD format, or (None, None) if no dates found
     """
     try:
         client = get_chroma_client(persist_dir)
         coll = get_or_create_collection(client, collection)
-        
-        # Get all unique dates (sample approach - get many records and find min/max)
-        # ChromaDB doesn't have a direct aggregation API, so we get a large sample
-        results = coll.get(
-            where={"date": {"$ne": ""}},  # Only get records with non-empty dates
-            limit=10000,  # Get large sample
-            include=["metadatas"]
-        )
-        
-        metadatas = results.get("metadatas", [])
-        if not metadatas:
-            return None, None
-        
-        # Extract all valid dates
-        dates = []
-        for meta in metadatas:
-            if meta and meta.get("date"):
-                date_str = meta["date"]
-                # Validate YYYY-MM-DD format
-                if len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-":
-                    dates.append(date_str)
-        
+
+        # Page through results in small batches to respect per-call limit,
+        # but still scan the full collection to get true global min/max.
+        batch_size = 250  # safely under Chroma's per-request limit
+        offset = 0
+        dates: List[str] = []
+
+        while True:
+            results = coll.get(
+                where={"date": {"$ne": ""}},  # Only records with non-empty dates
+                limit=batch_size,
+                offset=offset,
+                include=["metadatas"],
+            )
+
+            metadatas = results.get("metadatas", [])
+            if not metadatas:
+                break
+
+            for meta in metadatas:
+                if meta and meta.get("date"):
+                    date_str = meta["date"]
+                    # Validate YYYY-MM-DD format
+                    if (
+                        isinstance(date_str, str)
+                        and len(date_str) == 10
+                        and date_str[4] == "-"
+                        and date_str[7] == "-"
+                    ):
+                        dates.append(date_str)
+
+            # Advance to next page
+            offset += batch_size
+
         if not dates:
             return None, None
-        
-        # Return min and max
+
+        # Return true global min and max across all pages
         return min(dates), max(dates)
-        
+
     except Exception as e:
         console.log(f"[yellow]Could not get date range from DB: {e}[/yellow]")
         return None, None
