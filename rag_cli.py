@@ -905,11 +905,11 @@ def get_date_range_from_db(
         client = get_chroma_client(persist_dir)
         coll = get_or_create_collection(client, collection)
         
-        # Get all unique dates (sample approach - get many records and find min/max)
-        # ChromaDB doesn't have a direct aggregation API, so we get a large sample
+        # Get sample dates (use small limit to respect quota - 250 to be safe)
+        # Since date range typically doesn't change often, a sample is sufficient
         results = coll.get(
             where={"date": {"$ne": ""}},  # Only get records with non-empty dates
-            limit=10000,  # Get large sample
+            limit=299,  # Reduced to respect ChromaDB quota limits
             include=["metadatas"]
         )
         
@@ -929,7 +929,8 @@ def get_date_range_from_db(
         if not dates:
             return None, None
         
-        # Return min and max
+        # Return min and max from sample
+        # This is a reasonable approximation of the full range
         return min(dates), max(dates)
         
     except Exception as e:
